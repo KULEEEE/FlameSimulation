@@ -1,0 +1,154 @@
+﻿#include "Particle.h"
+#include <algorithm>
+#include <math.h>
+#include <vector>
+
+
+using namespace DirectX;
+
+Particles::Particles(int num, float dt, float size)
+{
+	mNumParticles = num;
+
+	mParticleSize = size;
+
+	mTimeStep = dt;
+	mTime = 0;
+
+	mCurrParticle.resize(num);
+
+
+
+	for (int i = 0; i < num; i++)
+	{
+
+		mCurrParticle[i].midPoint = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
+		mCurrParticle[i].lifespan = 0.0f;
+		mCurrParticle[i].fade = float(rand() % 100) / 1000.0f + 0.003f;
+		mCurrParticle[i].speed = XMFLOAT3(float((rand() % 50) - 25.0f) * 10.0f, 0.0f, 0.0f);
+		mCurrParticle[i].gravity = XMFLOAT3(0.0f, 0.8f, 0.0f);
+		mCurrParticle[i].particleColor = XMFLOAT3(0.0f, 0.0f, 0.0f);
+
+		makeParticle(i, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f));
+	}
+	mVertexCount = mCurrParticle.size() * 4;
+
+}
+Particles::~Particles()
+{
+}
+
+
+
+int Particles::VertexCount()
+{
+	return mVertexCount;
+}
+
+void Particles::Update(float dt, XMVECTOR eyePos)
+{
+
+	for (int i = 0; i < mNumParticles; i++)
+	{
+
+		//mCurrParticle[i].midPoint = XMVectorSet(i * 0.5f, 0.0f, i * -1.0f, 0.0f);
+		//mCurrParticle[i].particleColor = XMFLOAT3(1.0f, i * 1.0f, 0.0f);
+		//mCurrParticle[i].lifespan = 1.0f;
+
+		mCurrParticle[i].midPoint = XMVectorAdd(mCurrParticle[i].midPoint, XMVectorSet(mCurrParticle[i].speed.x / 7500, mCurrParticle[i].speed.y / 12000, mCurrParticle[i].speed.z / 7500, 0.0f));
+
+		if ((XMVectorGetX(mCurrParticle[i].midPoint) > 0.0f) && (XMVectorGetY(mCurrParticle[i].midPoint) > 0.0f))
+		{
+			mCurrParticle[i].gravity.x = -0.1f;
+		}
+		else if ((XMVectorGetX(mCurrParticle[i].midPoint) < 0.0f) && (XMVectorGetY(mCurrParticle[i].midPoint) > 0.0f))
+		{
+			mCurrParticle[i].gravity.x = 0.1f;
+		}
+		else
+		{
+			mCurrParticle[i].gravity.x = 0.0f;
+		}
+
+
+		if ((XMVectorGetZ(mCurrParticle[i].midPoint) > 0.0f) && (XMVectorGetY(mCurrParticle[i].midPoint) > 0.0f))
+		{
+			mCurrParticle[i].gravity.z = -0.1f;
+		}
+		else if ((XMVectorGetZ(mCurrParticle[i].midPoint) < 0.0f) && (XMVectorGetY(mCurrParticle[i].midPoint) > 0.0f))
+		{
+			mCurrParticle[i].gravity.z = 0.1f;
+		}
+		else
+		{
+			mCurrParticle[i].gravity.z = 0.0f;
+		}
+
+
+		mCurrParticle[i].speed = XMFLOAT3(mCurrParticle[i].speed.x + mCurrParticle[i].gravity.x, mCurrParticle[i].speed.y + mCurrParticle[i].gravity.y, mCurrParticle[i].speed.z + mCurrParticle[i].gravity.z);
+		mCurrParticle[i].lifespan -= mCurrParticle[i].fade;
+		if (mCurrParticle[i].lifespan < 0.0f)
+		{
+			mCurrParticle[i].lifespan = 1.0f;
+			mCurrParticle[i].fade = float(rand() % 100) / 1000.0f + 0.003f;
+			mCurrParticle[i].midPoint = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
+			mCurrParticle[i].speed = XMFLOAT3(float((rand() % 60) - 30.0f), float((rand() % 60) - 30.0f), float((rand() % 60) - 30.0f));
+			mCurrParticle[i].particleColor = XMFLOAT3(1.0f, 1.0f, 1.0f);
+			mCurrParticle[i].gravity.y = 0.8f;
+		}
+		else if (mCurrParticle[i].lifespan < 0.5f)
+		{
+			mCurrParticle[i].particleColor = XMFLOAT3(0.7f, 0.0f, 0.0f);
+		}
+
+		else if (mCurrParticle[i].lifespan < 0.65f)
+		{
+			mCurrParticle[i].particleColor = XMFLOAT3(1.0f, 0.5f, 0.0f);
+		}
+		else if (mCurrParticle[i].lifespan < 0.8f)
+		{
+			mCurrParticle[i].particleColor = XMFLOAT3(1.0f, 1.0f, 0.0f);
+		}
+		else if (mCurrParticle[i].lifespan < 1.0f)
+		{
+			mCurrParticle[i].particleColor = XMFLOAT3(1.0f, 1.0f, 1.0f);
+		}
+
+		makeParticle(i, eyePos);
+
+	}
+}
+
+void Particles::makeParticle(int i, XMVECTOR eyePos)
+{
+	//XMVECTOR ep = XMVectorSet(2.0f, 1.0f, 1.0f, 0.0f);
+
+	XMVECTOR epv = XMVector3Normalize(XMVectorAdd(eyePos, XMVectorNegate(mCurrParticle[i].midPoint)));
+	XMVECTOR a1 = XMVector3Normalize(XMVectorSet(1.0f, 1.0f, -(XMVectorGetX(epv) + XMVectorGetY(epv)) / XMVectorGetZ(epv), 0.0f));
+	XMVECTOR a2 = XMVector3Cross(epv, a1);
+
+	float temp = XMVectorGetX(epv) * XMVectorGetX(a1) + XMVectorGetY(epv) * XMVectorGetY(a1) + XMVectorGetZ(epv) * XMVectorGetZ(a1);
+
+	mCurrParticle[i].position.clear();
+	mCurrParticle[i].color.clear();
+	mCurrParticle[i].texcoord.clear();
+
+
+	mCurrParticle[i].position.push_back(XMVectorAdd(XMVectorSet(mParticleSize * XMVectorGetX(a1), mParticleSize * XMVectorGetY(a1), mParticleSize * XMVectorGetZ(a1), 0.0f), mCurrParticle[i].midPoint));
+	mCurrParticle[i].color.push_back(XMVectorSet(mCurrParticle[i].particleColor.x, mCurrParticle[i].particleColor.y, mCurrParticle[i].particleColor.z, mCurrParticle[i].lifespan));
+	mCurrParticle[i].texcoord.push_back(XMFLOAT2(1, 1));
+
+	mCurrParticle[i].position.push_back(XMVectorAdd(XMVectorSet(-mParticleSize * XMVectorGetX(a2), -mParticleSize * XMVectorGetY(a2), -mParticleSize * XMVectorGetZ(a2), 0.0f), mCurrParticle[i].midPoint));
+	mCurrParticle[i].color.push_back(XMVectorSet(mCurrParticle[i].particleColor.x, mCurrParticle[i].particleColor.y, mCurrParticle[i].particleColor.z, mCurrParticle[i].lifespan));
+	mCurrParticle[i].texcoord.push_back(XMFLOAT2(1, 0));
+
+
+	mCurrParticle[i].position.push_back(XMVectorAdd(XMVectorSet(mParticleSize * XMVectorGetX(a2), mParticleSize * XMVectorGetY(a2), mParticleSize * XMVectorGetZ(a2), 0.0f), mCurrParticle[i].midPoint));
+	mCurrParticle[i].color.push_back(XMVectorSet(mCurrParticle[i].particleColor.x, mCurrParticle[i].particleColor.y, mCurrParticle[i].particleColor.z, mCurrParticle[i].lifespan));
+	mCurrParticle[i].texcoord.push_back(XMFLOAT2(0, 1));
+
+
+	mCurrParticle[i].position.push_back(XMVectorAdd(XMVectorSet(-mParticleSize * XMVectorGetX(a1), -mParticleSize * XMVectorGetY(a1), -mParticleSize * XMVectorGetZ(a1), 0.0f), mCurrParticle[i].midPoint));
+	mCurrParticle[i].color.push_back(XMVectorSet(mCurrParticle[i].particleColor.x, mCurrParticle[i].particleColor.y, mCurrParticle[i].particleColor.z, mCurrParticle[i].lifespan));
+	mCurrParticle[i].texcoord.push_back(XMFLOAT2(0, 0));
+}
