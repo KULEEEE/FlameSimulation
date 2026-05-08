@@ -161,7 +161,11 @@ private:
 	float mPhi = 0.5f * XM_PI;
 	float mRadius = 15.0f;
 	float mParticleSize = 0.11f;
-	float mBlur = 0.015f;
+
+	// Turbulence sample radius for PS_tmap. Locked: PS_tmap now produces a
+	// rotated (curl) field, which only behaves well at small radii — large
+	// values cause global wrap-around sampling that breaks the flow.
+	static constexpr float kBlur = 0.015f;
 
 	float mTemp = 0.15f;
 	float mWidth = 1.0f;
@@ -495,7 +499,6 @@ void Flame::UpdateImGui(const GameTimer& gt)
 	ImGui::SliderFloat("Particle Size", &mParticleSize, 0.0f, 0.5f);
 	ImGui::SliderFloat("Flame width", &mTemp, 0.0f, 1.0f);
 	ImGui::SliderFloat("Flame Direction", &mWidth, -10.0f, 10.0f);
-	ImGui::SliderFloat("Turbulence Strength", &mBlur, 0.001f, 0.999f);
 	ImGui::Checkbox("Boundary box", &isBound);
 	if (ImGui::Button("Texture"))
 	{
@@ -509,8 +512,6 @@ void Flame::UpdateImGui(const GameTimer& gt)
 	if (ImGui::Button("Initialize"))
 	{
 		mParticleSize = 0.11f;
-		mBlur = 0.015f;
-
 		mTemp = 0.15f;
 		mWidth = 1.0f;
 		mTexture = 2;
@@ -626,7 +627,7 @@ void Flame::UpdateMainPassCB(const GameTimer& gt)
 	//mMainPassCB.Lights[2].Position = XMFLOAT3(0.0f, 1.5f, 0.0f);
 	//mMainPassCB.Lights[2].Strength = { 1.0f, 1.0f, 0.9f };
 	mMainPassCB.initialPoint = initialPoint;
-	mMainPassCB.blur = mBlur;
+	mMainPassCB.blur = kBlur;
 	auto currPassCB = mCurrFrameResource->PassCB.get();
 	currPassCB->CopyData(0, mMainPassCB);
 	

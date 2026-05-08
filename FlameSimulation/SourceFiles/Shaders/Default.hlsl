@@ -200,9 +200,21 @@ float4 PS_tmap(VertexOut pin) : SV_Target
     float w1 = c - a1, w2 = c - a2, w3 = c - a3, w4 = c - a4;
     float w5 = c - a5, w6 = c - a6, w7 = c - a7, w8 = c - a8;
 
-    return float4(-w1 + w3 + w4 + w5 - w7 - w8,
-                   w1 + w2 + w3 - w5 - w6 - w7,
-                   0.0f, 1.0f);
+    // Compass-style gradient of alpha: gx ≈ ∂α/∂x, gy ≈ ∂α/∂y.
+    float gx = -w1 + w3 + w4 + w5 - w7 - w8;
+    float gy =  w1 + w2 + w3 - w5 - w6 - w7;
+
+    // Rotate the gradient by 90° to produce a divergence-free (curl) field
+    // that runs *along* iso-alpha contours instead of across them. The
+    // downstream PS_map normalises this vector, so only the direction
+    // matters — magnitude is irrelevant.
+    //
+    //     gradient (curl-free)        rotated (divergence-free)
+    //         ↑   ↑   ↑                  →   →   →
+    //      ↗  ↑  ↑  ↑  ↖              ↗   ↑   ↑   ↖
+    //     →   ●   ←     etc.         ↑   curl   ↓
+    //
+    return float4(-gy, gx, 0.0f, 1.0f);
 }
 
 VertexOut VS_map(VertexIn vin)
