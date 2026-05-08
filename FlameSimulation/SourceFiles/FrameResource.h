@@ -36,6 +36,12 @@ struct PassConstants
 	Light Lights[MaxLights];
     DirectX::XMFLOAT3 initialPoint = { 0.0f, 0.0f, 0.0f };
     float blur = 0.01f;
+
+    // Bloom tuning, exposed via ImGui at runtime.
+    float BloomThreshold = 1.0f;     // pixels with sum > threshold contribute
+    float BloomIntensity = 0.35f;    // halo strength at composite
+    float bloomPad1      = 0.0f;     // 16-byte cbuffer alignment
+    float bloomPad2      = 0.0f;
 };
 
 struct Vertex

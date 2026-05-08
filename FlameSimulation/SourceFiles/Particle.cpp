@@ -44,6 +44,13 @@ void Particles::Update(float dt, XMVECTOR eyePos, XMVECTOR up, float particleSiz
 {
 	mParticleSize = particleSize;
 
+	// All per-frame increments below were originally tuned for ~60 Hz. Multiply
+	// by (60 * dt) so the simulation looks identical at 60 Hz and rescales
+	// correctly at other framerates. Clamp dt to 1/30 s so a frame hitch (or
+	// alt-tab pause) doesn't snap particles into oblivion in a single step.
+	const float dtClamped = (dt < 1.0f / 30.0f) ? dt : (1.0f / 30.0f);
+	const float dtScale   = 60.0f * dtClamped;
+
 	// The simulation is split into 4 "lobes" with slightly different vertical
 	// damping factors so the visible flame has asymmetric motion. Lobes 0 and 3
 	// damp the y-component more (divisor 2000) than lobes 1 and 2 (divisor 1500).
@@ -63,7 +70,9 @@ void Particles::Update(float dt, XMVECTOR eyePos, XMVECTOR up, float particleSiz
 			particle& p = mCurrParticle[i];
 
 			p.midPoint = XMVectorAdd(p.midPoint,
-				XMVectorSet(p.speed.x / 1500.0f, p.speed.y * invY, p.speed.z / 1500.0f, 0.0f));
+				XMVectorSet(p.speed.x / 1500.0f * dtScale,
+				            p.speed.y * invY     * dtScale,
+				            p.speed.z / 1500.0f * dtScale, 0.0f));
 
 			const float mx = XMVectorGetX(p.midPoint);
 			const float my = XMVectorGetY(p.midPoint);
@@ -85,11 +94,11 @@ void Particles::Update(float dt, XMVECTOR eyePos, XMVECTOR up, float particleSiz
 				p.gravity.z = MathHelper::RandF(-0.5f, 0.5f);
 			}
 
-			p.speed.x += p.gravity.x;
-			p.speed.y += p.gravity.y;
-			p.speed.z += p.gravity.z;
+			p.speed.x += p.gravity.x * dtScale;
+			p.speed.y += p.gravity.y * dtScale;
+			p.speed.z += p.gravity.z * dtScale;
 
-			p.lifespan -= p.fade;
+			p.lifespan -= p.fade * dtScale;
 			if (p.lifespan < 0.0f)
 			{
 				p.lifespan = MathHelper::RandF(0.6f, 1.0f);

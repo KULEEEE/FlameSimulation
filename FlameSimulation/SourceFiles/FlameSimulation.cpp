@@ -8,11 +8,18 @@
 
 #include "ParticleMap.h"
 #include "TurbulenceMap.h"
+#include "BloomMap.h"
 
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 using namespace DirectX::PackedVector;
+
+// Number of mip levels in the bloom downsample/upsample chain. mip 0 is the
+// largest (= 512² in this scene); mip kBloomMips-1 is the smallest. More
+// levels = wider, smoother glow at the cost of extra render passes and
+// descriptor slots.
+static const int kBloomMips = 6;
 
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "D3D12.lib")
@@ -72,7 +79,6 @@ private:
 	void UpdateMaterialCBs(const GameTimer& gt);
 	void UpdateMainPassCB(const GameTimer& gt);
 	void UpdateParticles(const GameTimer& gt);
-	void SunLight(const GameTimer& gt);
 	void LoadTextures();
 
 	void BuildDescriptorHeaps();
@@ -94,6 +100,10 @@ private:
 	void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems);
 	void DrawSceneToParticleMap();
 	void DrawSceneToTmap();
+	void DrawBloomChain();
+	void DrawBloomPass(UINT srcSrvSlot, int destMip,
+	                   ID3D12PipelineState* pso, MeshGeometry* geo,
+	                   UINT indexCount);
 
 	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> GetStaticSamplers();
 
@@ -116,6 +126,7 @@ private:
 
 	std::unique_ptr<ParticleMap> mParticleMap = nullptr;
 	std::unique_ptr<TurbulenceMap> mTurbluenceMap = nullptr;
+	std::unique_ptr<BloomMap> mBloomMips[kBloomMips];
 
 	CD3DX12_CPU_DESCRIPTOR_HANDLE mDSV;
 
@@ -131,6 +142,9 @@ private:
 	ComPtr<ID3D12PipelineState> mMapPSO = nullptr;
 	ComPtr<ID3D12PipelineState> mTmapPSO = nullptr;
 	ComPtr<ID3D12PipelineState> mTransPSO = nullptr;
+	ComPtr<ID3D12PipelineState> mBloomExtractPSO    = nullptr;  // ParticleMap → mip 0
+	ComPtr<ID3D12PipelineState> mBloomDownsamplePSO = nullptr;  // mip K → mip K+1
+	ComPtr<ID3D12PipelineState> mBloomUpsamplePSO   = nullptr;  // mip K+1 → mip K (additive)
 	// List of all the render items.
 	std::vector<std::unique_ptr<RenderItem>> mAllRitems;
 
@@ -170,14 +184,16 @@ private:
 	float mTemp = 0.15f;
 	float mWidth = 1.0f;
 
+	// Bloom tuning (exposed via ImGui sliders).
+	float mBloomThreshold = 1.0f;
+	float mBloomIntensity = 0.35f;
+
 
 	int mTexture = 2;
 
 	bool isgui = false;
 	bool mPrevPDown = false;
 	bool isBound = false;
-	float mSunTheta = 1.25f * XM_PI;
-	float mSunPhi = XM_PIDIV4;
 
 	POINT mLastMousePos;
 };
@@ -236,6 +252,19 @@ bool Flame::Initialize()
 	mTurbluenceMap = std::make_unique<TurbulenceMap>(md3dDevice.Get(),
 		2048, 2048, DXGI_FORMAT_R16G16B16A16_FLOAT);
 
+	// Bloom mip chain. Each level is half the resolution of the previous one,
+	// so mip 0 covers a tight halo and mip 5 covers most of the screen with a
+	// soft low-frequency glow. Mip 0 is also the level the composite shader
+	// samples — every other mip's contribution gets folded back into mip 0
+	// by the upsample chain in DrawBloomChain().
+	UINT bloomSize = 512;
+	for (int i = 0; i < kBloomMips; ++i)
+	{
+		mBloomMips[i] = std::make_unique<BloomMap>(md3dDevice.Get(),
+			bloomSize, bloomSize, DXGI_FORMAT_R16G16B16A16_FLOAT);
+		bloomSize /= 2;
+	}
+
 	mParticles = std::make_unique<Particles>(8000, 0.03f, mParticleSize,initialPoint);
 	
 	mCamera.Walk(-10.0f);
@@ -273,8 +302,9 @@ bool Flame::Initialize()
 
 void Flame::CreateRtvAndDsvDescriptorHeaps()
 {
+	// Backbuffer ×2 + ParticleMap + TurbulenceMap + BloomMip[0..kBloomMips-1].
 	D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc;
-	rtvHeapDesc.NumDescriptors = SwapChainBufferCount + 2;
+	rtvHeapDesc.NumDescriptors = SwapChainBufferCount + 2 + kBloomMips;
 	rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 	rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 	rtvHeapDesc.NodeMask = 0;
@@ -328,7 +358,6 @@ void Flame::Update(const GameTimer& gt)
 	UpdateMaterialCBs(gt);
 	UpdateMainPassCB(gt);
 	UpdateParticles(gt);
-	SunLight(gt);
 }
 
 
@@ -352,7 +381,7 @@ void Flame::Draw(const GameTimer& gt)
 
 	DrawSceneToTmap();
 	DrawSceneToParticleMap();
-	
+	DrawBloomChain();
 
 	mCommandList->RSSetViewports(1, &mScreenViewport);
 	mCommandList->RSSetScissorRects(1, &mScissorRect);
@@ -499,6 +528,10 @@ void Flame::UpdateImGui(const GameTimer& gt)
 	ImGui::SliderFloat("Particle Size", &mParticleSize, 0.0f, 0.5f);
 	ImGui::SliderFloat("Flame width", &mTemp, 0.0f, 1.0f);
 	ImGui::SliderFloat("Flame Direction", &mWidth, -10.0f, 10.0f);
+	ImGui::Separator();
+	ImGui::SliderFloat("Bloom Threshold", &mBloomThreshold, 0.0f, 3.0f);
+	ImGui::SliderFloat("Bloom Intensity", &mBloomIntensity, 0.0f, 2.0f);
+	ImGui::Separator();
 	ImGui::Checkbox("Boundary box", &isBound);
 	if (ImGui::Button("Texture"))
 	{
@@ -511,34 +544,16 @@ void Flame::UpdateImGui(const GameTimer& gt)
 	ImGui::Text("Texture num = %d", mTexture+1);
 	if (ImGui::Button("Initialize"))
 	{
-		mParticleSize = 0.11f;
-		mTemp = 0.15f;
-		mWidth = 1.0f;
-		mTexture = 2;
+		mParticleSize   = 0.11f;
+		mTemp           = 0.15f;
+		mWidth          = 1.0f;
+		mTexture        = 2;
+		mBloomThreshold = 1.0f;
+		mBloomIntensity = 0.35f;
 	}
 	ImGui::End();
 }
 
-
-
-void Flame::SunLight(const GameTimer& gt)
-{
-	const float dt = gt.DeltaTime();
-
-	if (GetAsyncKeyState(VK_LEFT) & 0x8000)
-		mSunTheta -= 1.0f * dt;
-
-	if (GetAsyncKeyState(VK_RIGHT) & 0x8000)
-		mSunTheta += 1.0f * dt;
-
-	if (GetAsyncKeyState(VK_UP) & 0x8000)
-		mSunPhi -= 1.0f * dt;
-
-	if (GetAsyncKeyState(VK_DOWN) & 0x8000)
-		mSunPhi += 1.0f * dt;
-
-	mSunPhi = MathHelper::Clamp(mSunPhi, 0.1f, XM_PIDIV2);
-}
 
 
 void Flame::UpdateObjectCBs(const GameTimer& gt)
@@ -615,19 +630,31 @@ void Flame::UpdateMainPassCB(const GameTimer& gt)
 	mMainPassCB.FarZ = 1000.0f;
 	mMainPassCB.TotalTime = gt.TotalTime();
 	mMainPassCB.DeltaTime = gt.DeltaTime();
-	mMainPassCB.AmbientLight = { 0.25f, 0.25f, 0.35f, 1.0f };
+	// No global ambient — only firelight (point lights) illuminates the scene.
+	// Pixels outside the lights' falloff range fade to pure black.
+	mMainPassCB.AmbientLight = { 0.0f, 0.0f, 0.0f, 1.0f };
 
-	XMVECTOR lightDir = -MathHelper::SphericalToCartesian(1.0f, mSunTheta, mSunPhi);
+	// Slots 0-1: two warm point lights at the flame source. (No directional
+	// sun in this scene — NUM_DIR_LIGHTS is 0, so point lights start at slot 0.)
+	// Mixed-frequency sine flicker gives the illumination an organic, slightly
+	// chaotic wobble without the regularity of a single sine.
+	const float t = gt.TotalTime();
+	const float flicker1 = 0.85f + 0.15f * sinf(t * 11.3f) + 0.05f * sinf(t * 27.7f);
+	const float flicker2 = 0.90f + 0.10f * sinf(t * 7.9f  + 1.7f) + 0.05f * sinf(t * 19.1f);
 
-	XMStoreFloat3(&mMainPassCB.Lights[0].Direction, lightDir);
-	mMainPassCB.Lights[0].Strength = { 1.0f, 1.0f, 0.9f };
-	mMainPassCB.Lights[0].SpotPower = 1.0f;
-	//mMainPassCB.Lights[1].Position = XMFLOAT3(0.0f, 0.5f, 0.0f);
-	//mMainPassCB.Lights[1].Strength = { 1.0f, 1.0f, 0.9f };
-	//mMainPassCB.Lights[2].Position = XMFLOAT3(0.0f, 1.5f, 0.0f);
-	//mMainPassCB.Lights[2].Strength = { 1.0f, 1.0f, 0.9f };
-	mMainPassCB.initialPoint = initialPoint;
-	mMainPassCB.blur = kBlur;
+	mMainPassCB.Lights[0].Position     = XMFLOAT3(initialPoint.x, initialPoint.y + 0.3f, initialPoint.z);
+	mMainPassCB.Lights[0].Strength     = { 3.0f * flicker1, 1.1f * flicker1, 0.25f * flicker1 };
+	mMainPassCB.Lights[0].FalloffStart = 0.5f;
+	mMainPassCB.Lights[0].FalloffEnd   = 8.0f;
+
+	mMainPassCB.Lights[1].Position     = XMFLOAT3(initialPoint.x, initialPoint.y + 1.0f, initialPoint.z);
+	mMainPassCB.Lights[1].Strength     = { 1.5f * flicker2, 0.6f * flicker2, 0.15f * flicker2 };
+	mMainPassCB.Lights[1].FalloffStart = 1.0f;
+	mMainPassCB.Lights[1].FalloffEnd   = 12.0f;
+	mMainPassCB.initialPoint   = initialPoint;
+	mMainPassCB.blur           = kBlur;
+	mMainPassCB.BloomThreshold = mBloomThreshold;
+	mMainPassCB.BloomIntensity = mBloomIntensity;
 	auto currPassCB = mCurrFrameResource->PassCB.get();
 	currPassCB->CopyData(0, mMainPassCB);
 	
@@ -668,8 +695,12 @@ void Flame::UpdateParticles(const GameTimer& gt)
 
 void Flame::BuildRootSignature()
 {
+	// 3 SRVs at t0,t1,t2:
+	//   PS_map  : ParticleMap (t0) + TurbulenceMap (t1) + BloomMap (t2)
+	//   PS_bloom: ParticleMap (t0)               (t1, t2 unused)
+	//   PS / PS2: ParticleMap or texture (t0)    (t1, t2 unused)
 	CD3DX12_DESCRIPTOR_RANGE texTable;
-	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0,0);
+	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0, 0);
 	// Root parameter can be a table, root descriptor or root constants.
 	CD3DX12_ROOT_PARAMETER slotRootParameter[4];
 
@@ -763,15 +794,17 @@ void Flame::LoadTextures()
 
 void Flame::BuildDescriptorHeaps()
 {
-	// Slots 0..3: particle1..particle4
-	// Slot  4   : box
-	// Slot  5   : grass
-	// Slot  6   : ParticleMap
-	// Slot  7   : TurbulenceMap
-	// Slot  8   : ImGui font (must be a dedicated slot — ImGui_ImplDX12_Init
-	//             writes its font SRV into the handle we give it)
+	// Slots 0..3            : particle1..particle4
+	// Slot  4               : box
+	// Slot  5               : grass
+	// Slot  6               : ParticleMap     ─┐
+	// Slot  7               : TurbulenceMap    ├─ "map" material's 3-SRV table covers these.
+	// Slot  8               : BloomMip 0      ─┘  (PS_map's t2 — final accumulated bloom)
+	// Slots 9..(8+kBloomMips-1): BloomMip 1..N (read-only mips for downsample/upsample chain)
+	// Slot  8+kBloomMips    : ImGui font (must be a dedicated slot — ImGui_ImplDX12_Init
+	//                         writes its font SRV into the handle we give it)
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = 9;
+	srvHeapDesc.NumDescriptors = 9 + kBloomMips;
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -831,6 +864,13 @@ void Flame::BuildDescriptorHeaps()
 		CD3DX12_GPU_DESCRIPTOR_HANDLE(srvGpuStart, 7, mCbvSrvUavDescriptorSize),
 		CD3DX12_CPU_DESCRIPTOR_HANDLE(rtvCpuStart, SwapChainBufferCount+1, mRtvDescriptorSize));
 
+	for (int i = 0; i < kBloomMips; ++i)
+	{
+		mBloomMips[i]->BuildDescriptors(
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(srvCpuStart, 8 + i, mCbvSrvUavDescriptorSize),
+			CD3DX12_GPU_DESCRIPTOR_HANDLE(srvGpuStart, 8 + i, mCbvSrvUavDescriptorSize),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(rtvCpuStart, SwapChainBufferCount + 2 + i, mRtvDescriptorSize));
+	}
 }
 
 void Flame::BuildDepthStencil()
@@ -883,6 +923,9 @@ void Flame::BuildShadersAndInputLayout()
 	mShaders["opaquePS"] = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "PS2", "ps_5_1");
 	mShaders["boundaryVS"] = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "VS_boundary", "vs_5_1");
 	mShaders["boundaryPS"] = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "PS_boundary", "ps_5_1");
+	mShaders["bloomPS"]     = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "PS_bloom",           "ps_5_1");
+	mShaders["bloomDownPS"] = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "PS_bloomDownsample", "ps_5_1");
+	mShaders["bloomUpPS"]   = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "PS_bloomUpsample",   "ps_5_1");
 
 	mInputLayout =
 	{
@@ -1392,6 +1435,63 @@ void Flame::BuildPSOs()
 	tmapPsoDesc.BlendState.RenderTarget[0] = tmapBlendDesc;
 
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&tmapPsoDesc, IID_PPV_ARGS(&mTmapPSO)));
+
+	// Bloom post-process pipeline states. All three reuse VS_map (a passthrough
+	// fullscreen-quad VS) and write to BloomMip RTs (R16F, no depth buffer).
+	// They differ only in PS and blend state:
+	//
+	//   • Extract    : PS_bloom            — bright extract + small Gaussian.
+	//                  No blend (overwrite).
+	//   • Downsample : PS_bloomDownsample  — bilinear copy to half-res mip.
+	//                  No blend (overwrite — destination is fresh each frame).
+	//   • Upsample   : PS_bloomUpsample    — bilinear copy to twice-res mip.
+	//                  ADDITIVE blend — accumulates onto the larger mip's
+	//                  existing downsample data, building the multi-octave sum.
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC bloomPsoDesc;
+	ZeroMemory(&bloomPsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+	bloomPsoDesc.InputLayout    = { mInputLayout.data(), (UINT)mInputLayout.size() };
+	bloomPsoDesc.pRootSignature = mRootSignature.Get();
+	bloomPsoDesc.VS = { reinterpret_cast<BYTE*>(mShaders["mapVS"]->GetBufferPointer()),
+	                    mShaders["mapVS"]->GetBufferSize() };
+	bloomPsoDesc.RasterizerState                  = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	bloomPsoDesc.BlendState                       = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	bloomPsoDesc.DepthStencilState                = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+	bloomPsoDesc.DepthStencilState.DepthEnable    = FALSE;
+	bloomPsoDesc.DepthStencilState.StencilEnable  = FALSE;
+	bloomPsoDesc.SampleMask                       = UINT_MAX;
+	bloomPsoDesc.PrimitiveTopologyType            = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	bloomPsoDesc.NumRenderTargets                 = 1;
+	bloomPsoDesc.RTVFormats[0]                    = mBackBufferFormat;   // R16G16B16A16_FLOAT
+	bloomPsoDesc.SampleDesc.Count                 = 1;
+	bloomPsoDesc.SampleDesc.Quality               = 0;
+	bloomPsoDesc.DSVFormat                        = DXGI_FORMAT_UNKNOWN;
+
+	// 1) Extract PSO
+	bloomPsoDesc.PS = { reinterpret_cast<BYTE*>(mShaders["bloomPS"]->GetBufferPointer()),
+	                    mShaders["bloomPS"]->GetBufferSize() };
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&bloomPsoDesc, IID_PPV_ARGS(&mBloomExtractPSO)));
+
+	// 2) Downsample PSO
+	bloomPsoDesc.PS = { reinterpret_cast<BYTE*>(mShaders["bloomDownPS"]->GetBufferPointer()),
+	                    mShaders["bloomDownPS"]->GetBufferSize() };
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&bloomPsoDesc, IID_PPV_ARGS(&mBloomDownsamplePSO)));
+
+	// 3) Upsample PSO (additive blend)
+	bloomPsoDesc.PS = { reinterpret_cast<BYTE*>(mShaders["bloomUpPS"]->GetBufferPointer()),
+	                    mShaders["bloomUpPS"]->GetBufferSize() };
+	D3D12_RENDER_TARGET_BLEND_DESC additive = {};
+	additive.BlendEnable           = TRUE;
+	additive.LogicOpEnable         = FALSE;
+	additive.SrcBlend              = D3D12_BLEND_ONE;
+	additive.DestBlend             = D3D12_BLEND_ONE;
+	additive.BlendOp               = D3D12_BLEND_OP_ADD;
+	additive.SrcBlendAlpha         = D3D12_BLEND_ONE;
+	additive.DestBlendAlpha        = D3D12_BLEND_ONE;
+	additive.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+	additive.LogicOp               = D3D12_LOGIC_OP_NOOP;
+	additive.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+	bloomPsoDesc.BlendState.RenderTarget[0] = additive;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&bloomPsoDesc, IID_PPV_ARGS(&mBloomUpsamplePSO)));
 }
 
 void Flame::BuildFrameResources()
@@ -1412,9 +1512,10 @@ void Flame::BuildImGui()
 
 	ImGuiIO& io = ImGui::GetIO(); (void)io;
 
-	// Reserve the last SRV slot (8) for ImGui's font — ImGui_ImplDX12_Init writes
-	// its font SRV into the handle passed in, so this must NOT alias slot 0.
-	const UINT imguiSlot = 8;
+	// Reserve the last SRV slot (right after the bloom mip range) for ImGui's
+	// font — ImGui_ImplDX12_Init writes its font SRV into the handle passed in,
+	// so this must NOT alias another texture slot.
+	const UINT imguiSlot = 8 + kBloomMips;
 	CD3DX12_CPU_DESCRIPTOR_HANDLE imguiCpu(mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
 		imguiSlot, mCbvSrvDescriptorSize);
 	CD3DX12_GPU_DESCRIPTOR_HANDLE imguiGpu(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
@@ -1676,6 +1777,95 @@ void Flame::DrawSceneToTmap()
 	DrawRenderItems(mCommandList.Get(), mTmapRitems);
 
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mTurbluenceMap->Resource(),
+		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+}
+
+// Multi-octave bloom chain.
+//
+//   1)  ParticleMap  ─bright extract─→ BloomMip[0]
+//   2..N) BloomMip[K] ─downsample──────→ BloomMip[K+1]   (K = 0..N-2)
+//   N+1..) BloomMip[K+1] ─additive upsample─→ BloomMip[K] (K = N-2..0)
+//
+// After the upsample chain finishes, BloomMip[0] holds the sum of every
+// octave's contribution — tight halo at full res combined with progressively
+// wider, softer glows from the smaller mips. PS_map then samples mip 0.
+void Flame::DrawBloomChain()
+{
+	// All bloom passes share these bindings, so set them once up-front instead
+	// of reconfiguring the command list per pass.
+	auto passCB = mCurrFrameResource->PassCB->Resource();
+	mCommandList->SetGraphicsRootConstantBufferView(2, passCB->GetGPUVirtualAddress());
+
+	auto objectCB = mCurrFrameResource->ObjectCB->Resource();
+	auto matCB    = mCurrFrameResource->MaterialCB->Resource();
+	const UINT objCBSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+	const UINT matCBSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
+
+	// All bloom passes draw the same fullscreen quad — pull its mesh from the
+	// existing map render item so we don't need to plumb a separate ritem.
+	auto mapRitem = mMapRitems[0];
+	auto fullscreenGeo = mapRitem->Geo;
+	const UINT mapIndexCount = mapRitem->IndexCount;
+
+	mCommandList->IASetVertexBuffers(0, 1, &fullscreenGeo->VertexBufferView());
+	mCommandList->IASetIndexBuffer(&fullscreenGeo->IndexBufferView());
+	mCommandList->IASetPrimitiveTopology(mapRitem->PrimitiveType);
+
+	mCommandList->SetGraphicsRootConstantBufferView(1,
+		objectCB->GetGPUVirtualAddress() + mapRitem->ObjCBIndex * objCBSize);
+	mCommandList->SetGraphicsRootConstantBufferView(3,
+		matCB->GetGPUVirtualAddress() + mapRitem->Mat->MatCBIndex * matCBSize);
+
+	// === 1) Extract: ParticleMap → BloomMip[0] ===
+	// Source SRV slot 6 = ParticleMap.
+	DrawBloomPass(/*srcSrvSlot=*/6, /*destMip=*/0,
+	              mBloomExtractPSO.Get(), fullscreenGeo, mapIndexCount);
+
+	// === 2) Downsample chain: mip K → mip K+1 ===
+	// Source SRV slot is 8 + K (BloomMip[K]); destination is mip K+1.
+	for (int i = 0; i < kBloomMips - 1; ++i)
+	{
+		DrawBloomPass(/*srcSrvSlot=*/8 + i, /*destMip=*/i + 1,
+		              mBloomDownsamplePSO.Get(), fullscreenGeo, mapIndexCount);
+	}
+
+	// === 3) Upsample chain: mip K+1 → mip K (additive) ===
+	// Walk back down to mip 0, accumulating each smaller mip's contribution.
+	for (int i = kBloomMips - 2; i >= 0; --i)
+	{
+		DrawBloomPass(/*srcSrvSlot=*/8 + (i + 1), /*destMip=*/i,
+		              mBloomUpsamplePSO.Get(), fullscreenGeo, mapIndexCount);
+	}
+}
+
+// One step of the bloom chain: read from `srcSrvSlot`, write to BloomMips[destMip].
+// Caller is responsible for setting the per-pass-invariant root descriptors
+// (pass / object / material CBVs and the index buffer) before invoking this.
+void Flame::DrawBloomPass(UINT srcSrvSlot, int destMip,
+                          ID3D12PipelineState* pso, MeshGeometry* /*geo*/,
+                          UINT indexCount)
+{
+	auto& dest = mBloomMips[destMip];
+
+	mCommandList->RSSetViewports(1, &dest->Viewport());
+	mCommandList->RSSetScissorRects(1, &dest->ScissorRect());
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(dest->Resource(),
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET));
+
+	mCommandList->OMSetRenderTargets(1, &dest->Rtv(), false, nullptr);
+
+	// Bind source mip as t0 in the 3-SRV descriptor table. The downsample /
+	// upsample shaders only sample t0, so t1/t2 (whatever happens to be at
+	// srcSrvSlot+1, srcSrvSlot+2) are inert.
+	CD3DX12_GPU_DESCRIPTOR_HANDLE tex(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+	tex.Offset(srcSrvSlot, mCbvSrvDescriptorSize);
+	mCommandList->SetGraphicsRootDescriptorTable(0, tex);
+
+	mCommandList->SetPipelineState(pso);
+	mCommandList->DrawIndexedInstanced(indexCount, 1, 0, 0, 0);
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(dest->Resource(),
 		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
 }
 

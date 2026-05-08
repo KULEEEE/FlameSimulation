@@ -160,6 +160,7 @@
     <ClInclude Include="ImGui\imstb_rectpack.h" />
     <ClInclude Include="ImGui\imstb_textedit.h" />
     <ClInclude Include="ImGui\imstb_truetype.h" />
+    <ClInclude Include="BloomMap.h" />
     <ClInclude Include="Particle.h" />
     <ClInclude Include="ParticleMap.h" />
     <ClInclude Include="TurbulenceMap.h" />
@@ -181,6 +182,7 @@
     <ClCompile Include="ImGui\imgui_impl_win32.cpp" />
     <ClCompile Include="ImGui\imgui_tables.cpp" />
     <ClCompile Include="ImGui\imgui_widgets.cpp" />
+    <ClCompile Include="BloomMap.cpp" />
     <ClCompile Include="Particle.cpp" />
     <ClCompile Include="ParticleMap.cpp" />
     <ClCompile Include="TurbulenceMap.cpp" />
