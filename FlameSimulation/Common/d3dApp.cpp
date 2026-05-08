@@ -429,13 +429,24 @@ bool D3DApp::InitMainWindow()
 
 bool D3DApp::InitDirect3D()
 {
-#if defined(DEBUG) || defined(_DEBUG) 
-	// Enable the D3D12 debug layer.
-{
-	ComPtr<ID3D12Debug> debugController;
-	ThrowIfFailed(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)));
-	debugController->EnableDebugLayer();
-}
+#if defined(DEBUG) || defined(_DEBUG)
+	// Enable the D3D12 debug layer if the Graphics Tools optional feature is
+	// installed. If it isn't, D3D12GetDebugInterface returns
+	// DXGI_ERROR_SDK_COMPONENT_MISSING — fall back to running without the
+	// debug layer instead of throwing.
+	{
+		ComPtr<ID3D12Debug> debugController;
+		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
+		{
+			debugController->EnableDebugLayer();
+		}
+		else
+		{
+			OutputDebugStringA(
+				"[D3D12] Debug layer unavailable — install \"Graphics Tools\" "
+				"(Windows optional feature) to enable validation.\n");
+		}
+	}
 #endif
 
 	ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&mdxgiFactory)));

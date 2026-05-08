@@ -136,7 +136,6 @@ private:
 
 	RenderItem* mParticleItem;
 
-	RenderItem* mGridItem;
 	// Render items divided by PSO.
 	std::vector<RenderItem*> mMapRitems;
 	std::vector<RenderItem*> mTmapRitems;
@@ -169,14 +168,12 @@ private:
 
 
 	int mTexture = 2;
-	static const int mGridSize = 10;
 
 	bool isgui = false;
+	bool mPrevPDown = false;
 	bool isBound = false;
 	float mSunTheta = 1.25f * XM_PI;
 	float mSunPhi = XM_PIDIV4;
-
-	int mDensityField[mGridSize * mGridSize * mGridSize];
 
 	POINT mLastMousePos;
 };
@@ -280,9 +277,10 @@ void Flame::CreateRtvAndDsvDescriptorHeaps()
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(
 		&rtvHeapDesc, IID_PPV_ARGS(mRtvHeap.GetAddressOf())));
 
-	// Add +1 DSV for shadow map.
+	// Slot 0: back-buffer DSV (created by D3DApp::OnResize).
+	// Slot 1: 2048x2048 DSV shared by the two off-screen render-target passes.
 	D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc;
-	dsvHeapDesc.NumDescriptors = 3;
+	dsvHeapDesc.NumDescriptors = 2;
 	dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
 	dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 	dsvHeapDesc.NodeMask = 0;
@@ -291,7 +289,7 @@ void Flame::CreateRtvAndDsvDescriptorHeaps()
 
 	mDSV = CD3DX12_CPU_DESCRIPTOR_HANDLE(
 		mDsvHeap->GetCPUDescriptorHandleForHeapStart(),
-		2,
+		1,
 		mDsvDescriptorSize);
 }
 
@@ -476,8 +474,14 @@ void Flame::UpdateCamera(const GameTimer& gt)
 
 
 	mCamera.UpdateViewMatrix();
-	isgui = GetKeyState('P');
-	
+
+	// Edge-detect P to toggle the ImGui tool window. GetKeyState mixes the
+	// pressed bit (0x8000) with the toggle bit (0x0001) and was returning
+	// flickering values when cast to bool.
+	const bool pDown = (GetAsyncKeyState('P') & 0x8000) != 0;
+	if (pDown && !mPrevPDown)
+		isgui = !isgui;
+	mPrevPDown = pDown;
 }
 
 void Flame::UpdateImGui(const GameTimer& gt)
@@ -633,30 +637,29 @@ void Flame::UpdateParticles(const GameTimer& gt)
 	mParticles->Update(gt.DeltaTime(), mCamera.GetPosition(), mCamera.GetUp(),mParticleSize,mTemp,mWidth);
 	//mParticles2->Update(gt.DeltaTime(), mCamera.GetPosition(), mCamera.GetUp(), mParticleSize, mTemp, mWidth);
 	auto currParticleVB = mCurrFrameResource->ParticleVB.get();
-	auto currGridVB = mCurrFrameResource->GridVB.get();
-	
-	int vertexCountperParticle = mParticles->VertexCount() / mParticles->Num();
+
+	const int vertexCountperParticle = Particles::particlevert;
 	
 	
 
-	for (int j = 0; j < mParticles->VertexCount(); ++j)
+	const int numParticles = mParticles->Num();
+	for (int p = 0; p < numParticles; ++p)
 	{
-		Vertex v;
-		v.Pos = XMFLOAT3(XMVectorGetX(mParticles->Position(j / vertexCountperParticle, j % vertexCountperParticle)), XMVectorGetY(mParticles->Position(j / vertexCountperParticle, j % vertexCountperParticle)), XMVectorGetZ(mParticles->Position(j / vertexCountperParticle, j % vertexCountperParticle)));
-		v.TexCoord = mParticles->Texcoord(j / vertexCountperParticle, j % vertexCountperParticle);
-		v.Lifespan = mParticles->Lifespan(j / vertexCountperParticle);
-		v.Normal = XMFLOAT3(0.0f, 0.0f, 0.0f);
-		currParticleVB->CopyData(j, v);
+		const float life = mParticles->Lifespan(p);
+		for (int c = 0; c < vertexCountperParticle; ++c)
+		{
+			const XMVECTOR pos = mParticles->Position(p, c);
+			Vertex v;
+			XMStoreFloat3(&v.Pos, pos);
+			v.TexCoord = mParticles->Texcoord(c);
+			v.Lifespan = life;
+			v.Normal = XMFLOAT3(0.0f, 0.0f, 0.0f);
+			currParticleVB->CopyData(p * vertexCountperParticle + c, v);
+		}
 	}
 
-	
-
-	//make densityfield
-	
-	//mGridItem->Geo->VertexBufferGPU = currGridVB->Resource();
 	mParticleItem->Geo->VertexBufferGPU = currParticleVB->Resource();
 	mParticleItem->Mat->DiffuseSrvHeapIndex = mTexture;
-	
 }
 
 
@@ -759,8 +762,15 @@ void Flame::LoadTextures()
 
 void Flame::BuildDescriptorHeaps()
 {
+	// Slots 0..3: particle1..particle4
+	// Slot  4   : box
+	// Slot  5   : grass
+	// Slot  6   : ParticleMap
+	// Slot  7   : TurbulenceMap
+	// Slot  8   : ImGui font (must be a dedicated slot — ImGui_ImplDX12_Init
+	//             writes its font SRV into the handle we give it)
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = 8;
+	srvHeapDesc.NumDescriptors = 9;
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -864,7 +874,6 @@ void Flame::BuildShadersAndInputLayout()
 	
 
 	mShaders["standardVS"] = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "VS", "vs_5_1");
-	mShaders["particleVS"] = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "VS", "vs_5_1");
 	mShaders["standardPS"] = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "PS", "ps_5_1");
 	mShaders["mapVS"] = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "VS_map", "vs_5_1");
 	mShaders["mapPS"] = d3dUtil::CompileShader(L"Shaders/Default.hlsl", nullptr, "PS_map", "ps_5_1");
@@ -1000,45 +1009,12 @@ void Flame::BuildBoundary()
 
 	const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
 
-	std::vector<std::uint16_t> indices;
-	for (int i = 0; i < 8; i++)
-	{
-		indices.push_back(0);
-		indices.push_back(1);
-
-		indices.push_back(0);
-		indices.push_back(2);
-
-		indices.push_back(1);
-		indices.push_back(3);
-
-		indices.push_back(2);
-		indices.push_back(3);
-
-		indices.push_back(4);
-		indices.push_back(5);
-
-		indices.push_back(4);
-		indices.push_back(6);
-
-		indices.push_back(5);
-		indices.push_back(7);
-
-		indices.push_back(6);
-		indices.push_back(7);
-
-		indices.push_back(0);
-		indices.push_back(4);
-
-		indices.push_back(1);
-		indices.push_back(5);
-
-		indices.push_back(2);
-		indices.push_back(6);
-
-		indices.push_back(3);
-		indices.push_back(7);
-	}
+	// 12 edges of a unit cube as a line list.
+	std::vector<std::uint16_t> indices = {
+		0, 1,  0, 2,  1, 3,  2, 3,   // bottom rectangle
+		4, 5,  4, 6,  5, 7,  6, 7,   // top rectangle
+		0, 4,  1, 5,  2, 6,  3, 7,   // verticals
+	};
 	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
 
 	auto geo = std::make_unique<MeshGeometry>();
@@ -1298,8 +1274,8 @@ void Flame::BuildPSOs()
 	transparentPsoDesc.pRootSignature = mRootSignature.Get();
 	transparentPsoDesc.VS =
 	{
-		reinterpret_cast<BYTE*>(mShaders["particleVS"]->GetBufferPointer()),
-		mShaders["particleVS"]->GetBufferSize()
+		reinterpret_cast<BYTE*>(mShaders["standardVS"]->GetBufferPointer()),
+		mShaders["standardVS"]->GetBufferSize()
 	};
 	transparentPsoDesc.PS =
 	{
@@ -1419,22 +1395,33 @@ void Flame::BuildPSOs()
 
 void Flame::BuildFrameResources()
 {
-	
 	for (int i = 0; i < gNumFrameResources; ++i)
 	{
-		mFrameResources.push_back(std::make_unique<FrameResource>(md3dDevice.Get(), /*PSO Count*/ 2,(UINT)mAllRitems.size(), (UINT)mMaterials.size(), (UINT)mParticles->VertexCount(),mGridSize*mGridSize*mGridSize));
+		mFrameResources.push_back(std::make_unique<FrameResource>(
+			md3dDevice.Get(),
+			/*passCount*/ 1,
+			(UINT)mAllRitems.size(),
+			(UINT)mMaterials.size(),
+			(UINT)mParticles->VertexCount()));
 	}
-	
 }
 
 void Flame::BuildImGui()
 {
 
 	ImGuiIO& io = ImGui::GetIO(); (void)io;
+
+	// Reserve the last SRV slot (8) for ImGui's font — ImGui_ImplDX12_Init writes
+	// its font SRV into the handle passed in, so this must NOT alias slot 0.
+	const UINT imguiSlot = 8;
+	CD3DX12_CPU_DESCRIPTOR_HANDLE imguiCpu(mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+		imguiSlot, mCbvSrvDescriptorSize);
+	CD3DX12_GPU_DESCRIPTOR_HANDLE imguiGpu(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+		imguiSlot, mCbvSrvDescriptorSize);
+
 	ImGui_ImplDX12_Init(md3dDevice.Get(), 3,
 		DXGI_FORMAT_R8G8B8A8_UNORM, mSrvDescriptorHeap.Get(),
-		mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-		mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+		imguiCpu, imguiGpu);
 }
 
 void Flame::BuildMaterials()
@@ -1600,7 +1587,6 @@ void Flame::BuildRenderItems()
 	fieldRitem->IndexCount = fieldRitem->Geo->DrawArgs["field"].IndexCount;
 	fieldRitem->StartIndexLocation = fieldRitem->Geo->DrawArgs["field"].StartIndexLocation;
 	fieldRitem->BaseVertexLocation = fieldRitem->Geo->DrawArgs["field"].BaseVertexLocation;
-	mGridItem = fieldRitem.get();
 
 	mTmapRitems.push_back(fieldRitem.get());
 	mAllRitems.push_back(std::move(fieldRitem));
@@ -1628,8 +1614,6 @@ void Flame::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vecto
 		CD3DX12_GPU_DESCRIPTOR_HANDLE tex(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 		tex.Offset(ri->Mat->DiffuseSrvHeapIndex, mCbvSrvDescriptorSize);
 
-		UINT temp = objectCB->GetGPUVirtualAddress();
-
 		D3D12_GPU_VIRTUAL_ADDRESS objCBAddress = objectCB->GetGPUVirtualAddress() + ri->ObjCBIndex * objCBByteSize;
 		D3D12_GPU_VIRTUAL_ADDRESS matCBAddress = matCB->GetGPUVirtualAddress() + ri->Mat->MatCBIndex * matCBByteSize;
 
@@ -1648,39 +1632,26 @@ void Flame::DrawSceneToParticleMap()
 
 	// Change to RENDER_TARGET.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mParticleMap->Resource(),
-		D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET));
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
-	UINT passCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
-
-	// Clear the back buffer and depth buffer.
+	// Clear the off-screen RT and shared depth buffer.
 	FLOAT Black[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-	FLOAT White[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 	mCommandList->ClearRenderTargetView(mParticleMap->Rtv(), Black, 0, nullptr);
 	mCommandList->ClearDepthStencilView(mDSV, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
-	// Specify the buffers we are going to render to.
 	mCommandList->OMSetRenderTargets(1, &mParticleMap->Rtv(), true, &mDSV);
 
-	// Bind the pass constant buffer for this cube map face so we use 
-	// the right view/proj matrix for this cube face.
 	auto passCB = mCurrFrameResource->PassCB->Resource();
-	D3D12_GPU_VIRTUAL_ADDRESS passCBAddress = passCB->GetGPUVirtualAddress();
-	mCommandList->SetGraphicsRootConstantBufferView(2, passCBAddress);
+	mCommandList->SetGraphicsRootConstantBufferView(2, passCB->GetGPUVirtualAddress());
 
-	
 	mCommandList->SetPipelineState(mOpaquePSO.Get());
 	DrawRenderItems(mCommandList.Get(), mBoxRitems);
 	mCommandList->SetPipelineState(mTransPSO.Get());
 	DrawRenderItems(mCommandList.Get(), mTransRitems);
-	
 
-	//DrawRenderItems(mCommandList.Get(), mTransRitems);
-
-	
-
-	// Change back to GENERIC_READ so we can read the texture in a shader.
+	// Transition back to a shader-readable state for the composite pass.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mParticleMap->Resource(),
-		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ));
+		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
 }
 
 void Flame::DrawSceneToTmap()
@@ -1688,41 +1659,23 @@ void Flame::DrawSceneToTmap()
 	mCommandList->RSSetViewports(1, &mTurbluenceMap->Viewport());
 	mCommandList->RSSetScissorRects(1, &mTurbluenceMap->ScissorRect());
 
-	// Change to RENDER_TARGET.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mTurbluenceMap->Resource(),
-		D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET));
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
-	UINT passCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
-
-	// Clear the back buffer and depth buffer.
 	FLOAT Black[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-	FLOAT White[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 	mCommandList->ClearRenderTargetView(mTurbluenceMap->Rtv(), Black, 0, nullptr);
 	mCommandList->ClearDepthStencilView(mDSV, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
-	// Specify the buffers we are going to render to.
-	mCommandList->OMSetRenderTargets(1, &mTurbluenceMap->Rtv(), true, &mDSV	);
+	mCommandList->OMSetRenderTargets(1, &mTurbluenceMap->Rtv(), true, &mDSV);
 
-	// Bind the pass constant buffer for this cube map face so we use 
-	// the right view/proj matrix for this cube face.
 	auto passCB = mCurrFrameResource->PassCB->Resource();
-	D3D12_GPU_VIRTUAL_ADDRESS passCBAddress = passCB->GetGPUVirtualAddress();
-	mCommandList->SetGraphicsRootConstantBufferView(2, passCBAddress);
-
-	
+	mCommandList->SetGraphicsRootConstantBufferView(2, passCB->GetGPUVirtualAddress());
 
 	mCommandList->SetPipelineState(mTmapPSO.Get());
 	DrawRenderItems(mCommandList.Get(), mTmapRitems);
-	
 
-
-	//DrawRenderItems(mCommandList.Get(), mTransRitems);
-
-
-
-	// Change back to GENERIC_READ so we can read the texture in a shader.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mTurbluenceMap->Resource(),
-		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ));
+		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
 }
 
 std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> Flame::GetStaticSamplers()

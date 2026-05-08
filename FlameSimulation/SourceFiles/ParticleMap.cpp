@@ -75,48 +75,29 @@ void ParticleMap::BuildDescriptors()
 	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	srvDesc.Format = mFormat;
 	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-	srvDesc.TextureCube.MostDetailedMip = 0;
-	srvDesc.TextureCube.MipLevels = 1;
-	srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+	srvDesc.Texture2D.MostDetailedMip = 0;
+	srvDesc.Texture2D.MipLevels = 1;
+	srvDesc.Texture2D.PlaneSlice = 0;
+	srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-	// Create SRV
 	md3dDevice->CreateShaderResourceView(mParticleMap.Get(), &srvDesc, mhCpuSrv);
 
-	D3D12_RENDER_TARGET_VIEW_DESC rtvDesc;
+	D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
 	rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 	rtvDesc.Format = mFormat;
-	rtvDesc.Texture2DArray.MipSlice = 0;
-	rtvDesc.Texture2DArray.PlaneSlice = 0;
+	rtvDesc.Texture2D.MipSlice = 0;
+	rtvDesc.Texture2D.PlaneSlice = 0;
 
-	// Render target to ith element.
-	rtvDesc.Texture2DArray.FirstArraySlice = 0;
-
-	// Only view one element of the array.
-	rtvDesc.Texture2DArray.ArraySize = 1;
-
-	// Create RTV to ith cubemap face.
 	md3dDevice->CreateRenderTargetView(mParticleMap.Get(), &rtvDesc, mhCpuRtv);
 }
 
 void ParticleMap::BuildResource()
 {
-	// Note, compressed formats cannot be used for UAV.  We get error like:
-	// ERROR: ID3D11Device::CreateTexture2D: The format (0x4d, BC3_UNORM) 
-	// cannot be bound as an UnorderedAccessView, or cast to a format that
-	// could be bound as an UnorderedAccessView.  Therefore this format 
-	// does not support D3D11_BIND_UNORDERED_ACCESS.
-
-	D3D12_CLEAR_VALUE optClear;
+	D3D12_CLEAR_VALUE optClear = {};
 	optClear.Format = mFormat;
-	optClear.Color[0] = 0.f;
-	optClear.Color[1] = 0.f;
-	optClear.Color[2] = 0.f;
-	optClear.Color[3] = 0.f;
 
-	D3D12_RESOURCE_DESC texDesc;
-	ZeroMemory(&texDesc, sizeof(D3D12_RESOURCE_DESC));
+	D3D12_RESOURCE_DESC texDesc = {};
 	texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-	texDesc.Alignment = 0;
 	texDesc.Width = mWidth;
 	texDesc.Height = mHeight;
 	texDesc.DepthOrArraySize = 1;
@@ -131,7 +112,7 @@ void ParticleMap::BuildResource()
 		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
 		D3D12_HEAP_FLAG_NONE,
 		&texDesc,
-		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 		&optClear,
 		IID_PPV_ARGS(&mParticleMap)));
 }

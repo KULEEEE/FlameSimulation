@@ -1,0 +1,120 @@
+# =============================================================================
+# Visual Studio / MSBuild
+# =============================================================================
+
+# User-specific Visual Studio state (window layout, last opened files, etc.)
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# VS database files
+*.VC.db
+*.VC.opendb
+*.opendb
+*.sdf
+*.opensdf
+*.cachefile
+*.psess
+*.vsp
+*.vspx
+
+# =============================================================================
+# Build outputs
+# =============================================================================
+
+# Configuration/platform output dirs
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww]in32/
+[Bb]uild/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+
+# A nested intermediate dir VS creates for this project
+FlameSimulation/SourceFiles/FlameSimulation/
+
+# Precompiled headers / browse info
+ipch/
+*.aps
+*.ncb
+*.pch
+*.pdb
+*.idb
+*.ilk
+*.iobj
+*.ipdb
+*.meta
+*.obj
+*.tlb
+*.tli
+*.tlh
+*.tmp
+*.tmp_proj
+*.log
+*.vspscc
+*.vssscc
+.builds
+
+# Linker / compiler outputs
+*.exe
+*.dll
+*.lib
+*.exp
+*.cache
+*.tlog
+*.lastbuildstate
+*.unsuccessfulbuild
+
+# =============================================================================
+# Tools / IDEs
+# =============================================================================
+
+# ReSharper
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# CodeRush
+.cr/
+
+# NCrunch
+_NCrunch_*
+.*crunch*.local.xml
+nCrunchTemp_*
+
+# JetBrains Rider
+.idea/
+
+# VS Code
+.vscode/
+
+# Claude Code local state
+.claude/
+
+# =============================================================================
+# OS junk
+# =============================================================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# =============================================================================
+# Project-specific
+# =============================================================================
+
+# ImGui writes window state on every run; usually not worth tracking.
+# (NOTE: SourceFiles/imgui.ini is already tracked in this repo. To stop
+#  tracking it without deleting the file, run:
+#       git rm --cached FlameSimulation/SourceFiles/imgui.ini)
+imgui.ini

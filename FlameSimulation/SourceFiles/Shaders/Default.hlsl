@@ -186,18 +186,23 @@ VertexOut VS_tmap(VertexIn vin)
 
 float4 PS_tmap(VertexOut pin) : SV_Target
 {
-    float w1, w2, w3, w4, w5, w6, w7,w8;
-    w1 = gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC).a - gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC+float2(-blur,blur)).a;
-    w2 = gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC).a - gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC+float2( 0 ,blur)).a;
-    w3 = gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC).a - gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC+float2( blur,blur)).a;
-    w4 = gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC).a - gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC+float2( blur,0)).a;
-    w5 = gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC).a - gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC+float2( blur,-blur)).a;
-    w6 = gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC).a - gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC+float2( 0,-blur)).a;
-    w7 = gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC).a - gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC+float2(-blur,-blur)).a;
-    w8 = gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC).a - gDiffuseMap.Sample(gsamAnisotropicWrap,pin.TexC+float2(-blur,0)).a;
+    // Cache the center alpha once instead of resampling it for every w_n.
+    float c  = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC).a;
+    float a1 = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC + float2(-blur,  blur)).a;
+    float a2 = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC + float2( 0.0f,  blur)).a;
+    float a3 = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC + float2( blur,  blur)).a;
+    float a4 = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC + float2( blur,  0.0f)).a;
+    float a5 = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC + float2( blur, -blur)).a;
+    float a6 = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC + float2( 0.0f, -blur)).a;
+    float a7 = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC + float2(-blur, -blur)).a;
+    float a8 = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC + float2(-blur,  0.0f)).a;
 
-    return float4(-w1+w3+w4+w5-w7-w8,w1+w2+w3-w5-w6-w7,0.0f,1.0f);
-    //return float4(+w1-w3-w4-w5+w7+w8,w1-w2-w3+w5+w6+w7,0.0f,1.0f);
+    float w1 = c - a1, w2 = c - a2, w3 = c - a3, w4 = c - a4;
+    float w5 = c - a5, w6 = c - a6, w7 = c - a7, w8 = c - a8;
+
+    return float4(-w1 + w3 + w4 + w5 - w7 - w8,
+                   w1 + w2 + w3 - w5 - w6 - w7,
+                   0.0f, 1.0f);
 }
 
 VertexOut VS_map(VertexIn vin)
