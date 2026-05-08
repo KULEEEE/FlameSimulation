@@ -3,8 +3,7 @@
 ### Structure
 ![제목 없음-1](https://user-images.githubusercontent.com/42696987/147729581-5b9b052a-cbbf-4ce2-bc6e-8fae38ee0121.png)
 ### Output
-![제목 없음-2](https://user-images.githubusercontent.com/42696987/147729844-c46ec179-08dd-4a41-8366-0b278a9848b9.png)
-![제목 없음-3](https://user-images.githubusercontent.com/42696987/147729841-904994a2-248e-4249-a497-a0a9991b6e64.png)
+https://github.com/user-attachments/assets/bbcd99f6-3053-4032-aff0-b0372aff2dec
 
 ### Reference
 1. Xumin Liu, "Research on the Flame Simulation Method Based on the Particle System", International Journal of Control and Automation,Vol. 7. No. 12 (2014)
